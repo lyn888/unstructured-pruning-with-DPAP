@@ -74,6 +74,9 @@ class ConvBlock(nn.Module):
         self.sparse_neurons = sparse_neurons
         self.weight_mask = Mask()
         self.neuron_mask = Mask()
+        # 初始化脉冲轨迹，初始为零
+        self.spike_trace = None
+        self.tau = 0.5  # 衰减因子（可以调整）
 
     def init_mask(self, weights_mean: float, neurons_mean: float, weights_std: float = 0,
                   neurons_std: float = 0):
@@ -105,6 +108,8 @@ class ConvBlock(nn.Module):
         if self.sparse_neurons:
             self.neuron_mask._set_temp(temp)
 
+
+#将掩码应用于参数
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         weight = self.weight_mask(self.conv.weight)
         if self.static:

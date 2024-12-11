@@ -1,4 +1,7 @@
 import os
+
+import math
+
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # 选择使用 GPU 1
 
 import torch
@@ -43,6 +46,21 @@ from utils import left_neurons, left_weights, init_mask, set_pruning_mode
 from utils import is_main_process, save_on_master, search_tb_record, finetune_tb_record, accuracy, safe_makedirs
 from spikingjelly.clock_driven import functional
 
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+neuron_th = {}
+spines = {}
+bcm = {}
+epoch_trace = {}
+NUM = 0;
+fullbook = {}
+mat = {}
+fc = {}
+n_delta = {}
+ww_delta = {}
+#生存函数
+reduce = {}
+reduceww = {}
 
 
 def parse_args():
@@ -301,6 +319,179 @@ def load_data(dataset_dir, cache_dataset, dataset_type, distributed: bool, augme
         test_sampler = torch.utils.data.SequentialSampler(dataset_test)
 
     return dataset_train, dataset_test, train_sampler, test_sampler
+def computing_trace(model,spikes,batch_size = 16):
+
+    for i in range(len(model.imgsize)):
+        index=i-1
+        model.ctrace[index]=torch.zeros((model.batch,model.size_pool[i],model.imgsize[i],model.imgsize[i]),device=device)
+    for i in range(len(model.fclayer)):
+        index=model.fclayer[i]
+        model.fctrace[index]=torch.zeros((batch_size,model.fcsize[i]),device=device)
+    for t in range(model.step):
+        for i in range(len(model.imgsize)):
+            index=i-1
+            sp=spikes[t][index+1].detach()
+            #print(sp.size(),self.ctrace[index].size())
+            model.ctrace[index]=model.delta*model.ctrace[index].cuda()+sp.cuda()#卷积层的公式2
+        for i in range(len(model.fclayer)):
+            index=model.fclayer[i]
+            sp=spikes[t][index+1].detach()
+            model.fctrace[index]=model.delta*model.fctrace[index].cuda()+sp.cuda()#公式2
+    for i in range(len(model.imgsize)):
+        index=i-1
+        model.csum[index]=model.ctrace[index]/(model.step)
+        model.csum[index]=torch.sum(torch.sum(model.csum[index],dim=2),dim=2)
+    for i in range(len(model.fclayer)):
+        index=model.fclayer[i]
+        model.fcsum[index]=model.fctrace[index]/(model.step)
+    return model.csum,model.fcsum
+
+
+#epoch_trace 主要用于 神经元修剪，通过分析神经元的激活频率来确定是否保留神经元。
+#bcm 主要用于 权重修剪，通过跟踪权重的变化来决定哪些连接可以被去除
+def BCM_and_trace(model,NUM,trace,spikes,neuron_th,bcm,epoch_trace):
+    NUM = NUM + 1
+    csum,fcsum= computing_trace(model, spikes)
+    for i in range(1,len(model.convlayer)):
+        index=model.convlayer[i]
+        post1 = (csum[index] * (csum[index] - neuron_th[index]))
+        hebb1 = torch.mm(post1.T, csum[index-1])
+        bcm[index] = bcm[index] + hebb1#公式6
+        neuron_th[index] = torch.div(neuron_th[index] * (NUM - 1) + csum[index], NUM)#滑动阈值θ
+        cs=torch.sum(csum[index],dim=0)
+        epoch_trace[index] = epoch_trace[index] + cs#当前的
+
+    for i in range(1,len(model.fclayer)):
+        index = model.fclayer[i]
+        post1 = (fcsum[index] * (fcsum[index] - neuron_th[index]))
+        hebb1 = torch.mm(post1.T, fcsum[model.fclayer[i - 1]])
+        bcm[index] = bcm[index] + hebb1
+        neuron_th[index] = torch.div(neuron_th[index] * (NUM - 1) + fcsum[index], NUM)
+        cs=torch.sum(fcsum[index],dim=0)
+        epoch_trace[index] = epoch_trace[index] + cs
+    return epoch_trace,bcm,NUM
+
+
+def init(batch,convlayer,fclayer,size,fcsize):
+    neuron_th={}
+    convtra = {}
+    bcm={}
+    epoch_trace = {}
+
+    for i in range(1,len(convlayer)):
+        index=convlayer[i]
+        neuron_th[index]=torch.zeros((batch,size[i]),device=device)
+        convtra[index] = torch.zeros(size[i],device=device)
+        bcm[index]=torch.zeros(size[i],size[i-1],device=device)
+        epoch_trace[index] = torch.zeros((size[i]),device=device)
+    for i in range(1,len(fclayer)):
+        index=fclayer[i]
+        neuron_th[index]=torch.zeros((batch,fcsize[i]),device=device)
+        convtra[index]=torch.zeros(fcsize[i],device=device)
+        bcm[index]=torch.zeros(fcsize[i],fcsize[i-1],device=device)
+        epoch_trace[index] = torch.zeros(fcsize[i],device=device)
+    return neuron_th,convtra,bcm,epoch_trace
+
+
+def unit(x):
+    if x.size()[0]>0:
+        xnp=x.cpu().numpy()
+        maxx=np.percentile(xnp, 75)
+        minx=torch.min(x)
+        marge=maxx-minx
+        if marge!=0:
+            xx=(x-minx)/marge
+            xx=torch.clip(xx, 0,1)
+        else:
+            xx=0.5*torch.ones_like(x)
+        return xx
+    else:
+        return x
+
+def unit_tensor(x):
+    if x.size()[0]>0:
+        maxx=torch.max(x)
+        minx=torch.min(x)
+        marge=maxx-minx
+        if marge!=0:
+            xx=(x-minx)/marge
+        else:
+            xx=0.5*torch.ones_like(x)
+        return xx
+    else:
+        return x
+
+def DPAP_do_mask(bcm,spines,epoch,model):
+
+    for i in range(1, len(model.convlayer)):
+        index = model.convlayer[i]
+        ww = bcm[index]
+        dendrite = spines[index]
+        mat[index] = get_filter_codebook(ww, dendrite, 4, index, epoch)
+        a = mat[index] * model.conv1.mask()
+
+
+        
+        # self.mat[index] = self.convert2tensor(self.mat[index]).cuda()
+
+
+def get_filter_codebook( ww, dendrite, ii, index, epoch):
+
+    if ii == 4:
+        wconv = dendrite  # .cpu().numpy()
+        n_delta[index] = (unit(wconv) * 2 - 0.65)
+        pos = torch.nonzero(n_delta[index] > 0)
+        n_delta[index][pos] = n_delta[index][pos] + 5
+        print(wconv.mean(), wconv.max(), wconv.min())
+        reduce[index] = reduce[index] * 0.999 + n_delta[index] * math.exp(-int((epoch - 5) / 12))
+        filter_ind = torch.nonzero(reduce[index] < 0)
+        print(reduce[index].mean(), reduce[index].max(), reduce[index].min(), len(filter_ind))
+
+        for x in range(0, len(filter_ind)):
+            fullbook[index][filter_ind[x]] = 0
+
+    # if ii == 2:
+    #     length = ww.size()[0] * ww.size()[1]
+    #     book = torch.ones(length, device=device)
+    #     filter_ww = ww.view(-1)  # .cpu().numpy()
+    #     self.ww_delta[index] = (unit(filter_ww) * 2 - 1.5)
+    #     pos = torch.nonzero(self.ww_delta[index] > 0)
+    #     self.ww_delta[index][pos] = self.ww_delta[index][pos] + 2
+    #     self.reduceww[index] = self.reduceww[index] * 0.999 + self.ww_delta[index] * math.exp(
+    #         -int((epoch - 5) / 13))
+    #     filter_indww = torch.nonzero(self.reduceww[index] < 0)
+    #     book[filter_indww] = 0
+    #     book = book.reshape((ww.size()[0], -1))
+    #     self.fullbook[index] = self.fullbook[index] * book
+    #     print(self.reduceww[index].mean(), self.reduceww[index].max(), self.reduceww[index].min(),
+    #           len(filter_indww))
+    #
+    #     wconv = dendrite  # .cpu().numpy()
+    #     self.n_delta[index] = (unit(wconv) * 2 - 1.5)
+    #     pos = torch.nonzero(self.n_delta[index] > 0)
+    #     self.n_delta[index][pos] = self.n_delta[index][pos] + 2
+    #     self.reduce[index] = self.reduce[index] * 0.999 + self.n_delta[index] * math.exp(-int((epoch - 5) / 13))
+    #     filter_ind = torch.nonzero(self.reduce[index] < 0)
+    #     print(self.reduce[index].mean(), self.reduce[index].max(), self.reduce[index].min(), len(filter_ind))
+    #
+    #         for x in range(0, len(filter_ind)):
+    #             self.fullbook[index][filter_ind[x]] = 0
+
+    return fullbook[index]
+
+def init_length(model):
+    for i in range(1, len(model.convlayer)):
+        index = model.convlayer[i]
+        fullbook[index] = torch.ones((model.size[i], model.size[i - 1], 3, 3), device=device)
+        n_delta[index] = torch.zeros(model.size[i], device=device)
+        reduce[index] = 10 * torch.ones(model.size[i], device=device)
+    for i in range(1, len(model.fclayer)):
+        index = model.fclayer[i]
+        fullbook[index] = torch.ones((model.fcsize[i], model.fcsize[i - 1]), device=device)
+        n_delta[index] = torch.zeros(model.fcsize[i], device=device)
+        ww_delta[index] = torch.zeros(model.fcsize[i] * model.fcsize[i - 1], device=device)
+        reduce[index] = 10 * torch.ones(model.fcsize[i], device=device)
+        reduceww[index] = 10 * torch.ones(model.fcsize[i] * model.fcsize[i - 1], device=device)
 
 
 def train_one_epoch(model, criterion, penalty_term, optimizer_train, optimizer_prune,
@@ -317,18 +508,27 @@ def train_one_epoch(model, criterion, penalty_term, optimizer_train, optimizer_p
             image, target = image.float().cuda(), target.cuda()
             if scaler is not None:
                 with amp.autocast():
-                    output = model(image)
+                    #output = model(image)
+                    output, spikes = model(image)
                     if one_hot:
                         loss = criterion(output, F.one_hot(target, one_hot).float())
                     else:
                         loss = criterion(output, target)
             else:
-                output = model(image)
+                #output = model(image)
+                output, spikes = model(image)
                 if one_hot:
                     loss = criterion(output, F.one_hot(target, one_hot).float())
                 else:
                     loss = criterion(output, target)
             metric_dict['loss'].update(loss.item())
+
+            # Update BCM and epoch_trace
+            if bcm is not None and epoch_trace is not None:
+                epoch_trace, bcm, NUM = BCM_and_trace(model,NUM, epoch_trace, spikes, neuron_th, bcm, epoch_trace)
+
+
+
 
             if prune:
                 loss = loss + penalty_term()
@@ -561,6 +761,9 @@ def test(model, dataset_type, data_loader_test, inputs, args, logger):
         plt.close()
 
 
+
+
+
 def main():
 
     ##################################################
@@ -579,6 +782,7 @@ def main():
     torch.backends.cudnn.deterministic = True
     #禁用 cuDNN 的自动优化功能，以确保使用一致的算法。
     torch.backends.cudnn.benchmark = False
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     safe_makedirs(args.output_dir)
     logger = setup_logger(args.output_dir)
@@ -622,6 +826,10 @@ def main():
                                                 T=args.T, num_classes=num_classes).cuda()
     else:
         raise NotImplementedError(args.model)
+
+    neuron_th, spines, bcm, epoch_trace = init(args.b, model.convlayer, model.fclayer, model.size, model.fcsize)
+    init_length(model)
+
 
     if args.not_prune_weight:
         for m in model.modules():
@@ -827,6 +1035,24 @@ def main():
             if lr_scheduler_train is not None and lr_scheduler_T0 <= epoch < lr_scheduler_Tmax:
                 lr_scheduler_train.step()
                 lr_scheduler_prune.step()
+
+        for i in range(1, len(model.convlayer)):
+            index = model.convlayer[i]
+            bcmconv = torch.sum(bcm[index], dim=1)
+            bcmconv = unit_tensor(bcmconv)
+            traconv = unit_tensor(epoch_trace[index])
+            spines[index] = bcmconv * traconv
+        for i in range(1, len(model.fclayer)):
+            index = model.fclayer[i]
+            bcmfc = torch.sum(bcm[index], dim=1)
+            bcmfc = unit_tensor(bcmfc)
+            trafc = unit_tensor(epoch_trace[index])
+            spines[index] = bcmfc * trafc
+
+
+
+
+
 
         for n, m in model.named_modules():
             if isinstance(m, Mask):
