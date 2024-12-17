@@ -2,12 +2,12 @@ import os
 
 import math
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # 选择使用 GPU 1
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import torch
-print("可见的 GPU 数量:", torch.cuda.device_count())  # 应该只显示 1
-print("当前使用的 GPU:", torch.cuda.current_device())  # 应该输出 0
-print("当前 GPU 名称:", torch.cuda.get_device_name(0))  # 应该是 GPU 1 的名称
+print("可见的 GPU 数量:", torch.cuda.device_count())
+print("当前使用的 GPU:", torch.cuda.current_device())
+print("当前 GPU 名称:", torch.cuda.get_device_name(0))
 
 import logging
 import os
@@ -46,21 +46,28 @@ from utils import left_neurons, left_weights, init_mask, set_pruning_mode
 from utils import is_main_process, save_on_master, search_tb_record, finetune_tb_record, accuracy, safe_makedirs
 from spikingjelly.clock_driven import functional
 
-
+#修改部分
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#公式3里面的θ，滑动阈值
 neuron_th = {}
 spines = {}
+#BCM突触可塑性的追踪矩阵，记录每个神经元之间的突触连接强度。
 bcm = {}
+#存储每个epoch中每层神经元的活动追踪
 epoch_trace = {}
-NUM = 0;
+#公式5的NUM
+NUM = 0
 fullbook = {}
 mat = {}
 fc = {}
+#公式9的δ， 感觉像找到一个阈值
 n_delta = {}
 ww_delta = {}
+
 #生存函数
 reduce = {}
 reduceww = {}
+
 
 
 def parse_args():
@@ -319,11 +326,18 @@ def load_data(dataset_dir, cache_dataset, dataset_type, distributed: bool, augme
         test_sampler = torch.utils.data.SequentialSampler(dataset_test)
 
     return dataset_train, dataset_test, train_sampler, test_sampler
+
+
+
+#修改部分
+
 def computing_trace(model,spikes,batch_size = 16):
+
 
     for i in range(len(model.imgsize)):
         index=i-1
-        model.ctrace[index]=torch.zeros((model.batch,model.size_pool[i],model.imgsize[i],model.imgsize[i]),device=device)
+        # 存储每一层卷积层的神经元活动追踪（spike trace）
+        model.ctrace[index]=torch.zeros((batch_size,model.size_pool[i],model.imgsize[i],model.imgsize[i]),device=device)
     for i in range(len(model.fclayer)):
         index=model.fclayer[i]
         model.fctrace[index]=torch.zeros((batch_size,model.fcsize[i]),device=device)
@@ -331,47 +345,55 @@ def computing_trace(model,spikes,batch_size = 16):
         for i in range(len(model.imgsize)):
             index=i-1
             sp=spikes[t][index+1].detach()
-            #print(sp.size(),self.ctrace[index].size())
+            #print(sp.size(),model.ctrace[index].size())
             model.ctrace[index]=model.delta*model.ctrace[index].cuda()+sp.cuda()#卷积层的公式2
-        for i in range(len(model.fclayer)):
-            index=model.fclayer[i]
-            sp=spikes[t][index+1].detach()
-            model.fctrace[index]=model.delta*model.fctrace[index].cuda()+sp.cuda()#公式2
+        # for i in range(len(model.fclayer)):
+        #     index=model.fclayer[i]
+        #     sp=spikes[t][index+1].detach()
+        #     model.fctrace[index]=model.delta*model.fctrace[index].cuda()+sp.cuda()#公式2
     for i in range(len(model.imgsize)):
         index=i-1
         model.csum[index]=model.ctrace[index]/(model.step)
         model.csum[index]=torch.sum(torch.sum(model.csum[index],dim=2),dim=2)
-    for i in range(len(model.fclayer)):
-        index=model.fclayer[i]
-        model.fcsum[index]=model.fctrace[index]/(model.step)
+    # for i in range(len(model.fclayer)):
+    #     index=model.fclayer[i]
+    #     model.fcsum[index]=model.fctrace[index]/(model.step)
     return model.csum,model.fcsum
 
 
 #epoch_trace 主要用于 神经元修剪，通过分析神经元的激活频率来确定是否保留神经元。
 #bcm 主要用于 权重修剪，通过跟踪权重的变化来决定哪些连接可以被去除
-def BCM_and_trace(model,NUM,trace,spikes,neuron_th,bcm,epoch_trace):
+#spikes神经元在训练期间的脉冲
+def BCM_and_trace(model,NUM,spikes,neuron_th,bcm,epoch_trace):
+
     NUM = NUM + 1
+
+    #csum：卷积层的神经元的spiking trace。
+    #fcsum：全连接层的神经元的spiking trace。
     csum,fcsum= computing_trace(model, spikes)
     for i in range(1,len(model.convlayer)):
         index=model.convlayer[i]
         post1 = (csum[index] * (csum[index] - neuron_th[index]))
+        #hebb1：根据Hebb规则计算的突触更新，用于更新BCM矩阵，表示神经元之间的学习。
         hebb1 = torch.mm(post1.T, csum[index-1])
+        #bcm[index]：突触可塑性矩阵，记录神经元之间的突触强度。
         bcm[index] = bcm[index] + hebb1#公式6
         neuron_th[index] = torch.div(neuron_th[index] * (NUM - 1) + csum[index], NUM)#滑动阈值θ
         cs=torch.sum(csum[index],dim=0)
         epoch_trace[index] = epoch_trace[index] + cs#当前的
 
-    for i in range(1,len(model.fclayer)):
-        index = model.fclayer[i]
-        post1 = (fcsum[index] * (fcsum[index] - neuron_th[index]))
-        hebb1 = torch.mm(post1.T, fcsum[model.fclayer[i - 1]])
-        bcm[index] = bcm[index] + hebb1
-        neuron_th[index] = torch.div(neuron_th[index] * (NUM - 1) + fcsum[index], NUM)
-        cs=torch.sum(fcsum[index],dim=0)
-        epoch_trace[index] = epoch_trace[index] + cs
+    # for i in range(1,len(model.fclayer)):
+    #     index = model.fclayer[i]
+    #     post1 = (fcsum[index] * (fcsum[index] - neuron_th[index]))
+    #     hebb1 = torch.mm(post1.T, fcsum[model.fclayer[i - 1]])
+    #     bcm[index] = bcm[index] + hebb1
+    #     neuron_th[index] = torch.div(neuron_th[index] * (NUM - 1) + fcsum[index], NUM)
+    #     cs=torch.sum(fcsum[index],dim=0)
+    #     epoch_trace[index] = epoch_trace[index] + cs
     return epoch_trace,bcm,NUM
 
 
+#
 def init(batch,convlayer,fclayer,size,fcsize):
     neuron_th={}
     convtra = {}
@@ -435,19 +457,25 @@ def DPAP_do_mask(bcm,spines,epoch,model):
         # self.mat[index] = self.convert2tensor(self.mat[index]).cuda()
 
 
+#
 def get_filter_codebook( ww, dendrite, ii, index, epoch):
 
     if ii == 4:
         wconv = dendrite  # .cpu().numpy()
+        #公式9
         n_delta[index] = (unit(wconv) * 2 - 0.65)
         pos = torch.nonzero(n_delta[index] > 0)
+        #公式10
         n_delta[index][pos] = n_delta[index][pos] + 5
         print(wconv.mean(), wconv.max(), wconv.min())
+        #公式11
         reduce[index] = reduce[index] * 0.999 + n_delta[index] * math.exp(-int((epoch - 5) / 12))
+
         filter_ind = torch.nonzero(reduce[index] < 0)
         print(reduce[index].mean(), reduce[index].max(), reduce[index].min(), len(filter_ind))
 
         for x in range(0, len(filter_ind)):
+            #让整个卷积层归零
             fullbook[index][filter_ind[x]] = 0
 
     # if ii == 2:
@@ -492,11 +520,13 @@ def init_length(model):
         ww_delta[index] = torch.zeros(model.fcsize[i] * model.fcsize[i - 1], device=device)
         reduce[index] = 10 * torch.ones(model.fcsize[i], device=device)
         reduceww[index] = 10 * torch.ones(model.fcsize[i] * model.fcsize[i - 1], device=device)
+##上面修改
 
 
-def train_one_epoch(model, criterion, penalty_term, optimizer_train, optimizer_prune,
+
+def train_one_epoch(epoch_trace, bcm, neuron_th, model, criterion, penalty_term, optimizer_train, optimizer_prune,
                     data_loader_train, temp_scheduler, logger, epoch, print_freq, factor,
-                    scaler=None, accumulate_step=1, prune=False, one_hot=None, TET=False):
+                    scaler=None, accumulate_step=1, prune=False, one_hot=None,TET=False):
     model.train()
     metric_dict = RecordDict({'loss': None, 'acc@1': None, 'acc@5': None})
     timer_container = [0.0]
@@ -506,9 +536,11 @@ def train_one_epoch(model, criterion, penalty_term, optimizer_train, optimizer_p
     for idx, (image, target) in enumerate(data_loader_train):
         with GlobalTimer('iter', timer_container):
             image, target = image.float().cuda(), target.cuda()
+            # print(image.shape) torch.Size([1, 3, 32, 32])
             if scaler is not None:
                 with amp.autocast():
                     #output = model(image)
+                    #修改
                     output, spikes = model(image)
                     if one_hot:
                         loss = criterion(output, F.one_hot(target, one_hot).float())
@@ -516,6 +548,7 @@ def train_one_epoch(model, criterion, penalty_term, optimizer_train, optimizer_p
                         loss = criterion(output, target)
             else:
                 #output = model(image)
+                #修改
                 output, spikes = model(image)
                 if one_hot:
                     loss = criterion(output, F.one_hot(target, one_hot).float())
@@ -524,8 +557,12 @@ def train_one_epoch(model, criterion, penalty_term, optimizer_train, optimizer_p
             metric_dict['loss'].update(loss.item())
 
             # Update BCM and epoch_trace
-            if bcm is not None and epoch_trace is not None:
-                epoch_trace, bcm, NUM = BCM_and_trace(model,NUM, epoch_trace, spikes, neuron_th, bcm, epoch_trace)
+            #修改
+            global NUM
+            # global bcm
+            # global epoch_trace
+            # global neuron_th
+            epoch_trace, bcm, NUM = BCM_and_trace(model,NUM, spikes, neuron_th, bcm, epoch_trace)
 
 
 
@@ -587,7 +624,7 @@ def evaluate(model, criterion, data_loader, print_freq, logger, prune, one_hot):
         for idx, (image, target) in enumerate(data_loader):
             image = image.float().to(torch.device('cuda'), non_blocking=True)
             target = target.to(torch.device('cuda'), non_blocking=True)
-            output = model(image)
+            output, spikes = model(image)
             if one_hot:
                 loss = criterion(output, F.one_hot(target, one_hot).float())
             else:
@@ -827,7 +864,10 @@ def main():
     else:
         raise NotImplementedError(args.model)
 
-    neuron_th, spines, bcm, epoch_trace = init(args.b, model.convlayer, model.fclayer, model.size, model.fcsize)
+
+    #修改
+    neuron_th, spines, bcm, epoch_trace = init(args.batch_size, model.convlayer, model.fclayer, model.size, model.fcsize)
+
     init_length(model)
 
 
@@ -1017,6 +1057,11 @@ def main():
                                   purge_step=start_epoch)
 
     logger.info("Search start")
+
+
+
+
+
     for epoch in range(start_epoch, args.epoch_search):
         if args.resume and args.resume_type == 'finetune':
             break
@@ -1029,13 +1074,15 @@ def main():
         with Timer(' Train', logger):
             logger.debug('[Training]')
             train_loss, train_acc1, train_acc5 = train_one_epoch(
-                model, criterion, penalty_term, optimizer_train, optimizer_prune, data_loader_train,
+                epoch_trace, bcm, neuron_th ,model, criterion, penalty_term, optimizer_train, optimizer_prune, data_loader_train,
                 temp_scheduler, logger, epoch, args.print_freq, world_size, scaler,
                 args.accumulate_step, True, one_hot)
             if lr_scheduler_train is not None and lr_scheduler_T0 <= epoch < lr_scheduler_Tmax:
                 lr_scheduler_train.step()
                 lr_scheduler_prune.step()
 
+
+        #修改
         for i in range(1, len(model.convlayer)):
             index = model.convlayer[i]
             bcmconv = torch.sum(bcm[index], dim=1)
@@ -1165,7 +1212,7 @@ def main():
         with Timer(' Train', logger):
             logger.debug('[Training]')
             train_loss, train_acc1, train_acc5 = train_one_epoch(
-                model, criterion, None, optimizer_train, None, data_loader_train, None, logger,
+                epoch_trace, bcm, neuron_th ,model, criterion, None, optimizer_train, None, data_loader_train, None, logger,
                 epoch, args.print_freq, world_size, scaler, args.accumulate_step, False, one_hot)
             if lr_scheduler_train is not None and lr_scheduler_T0 <= epoch < lr_scheduler_Tmax:
                 lr_scheduler_train.step()

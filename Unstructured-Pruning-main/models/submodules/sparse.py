@@ -108,7 +108,6 @@ class ConvBlock(nn.Module):
         if self.sparse_neurons:
             self.neuron_mask._set_temp(temp)
 
-
 #将掩码应用于参数
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         weight = self.weight_mask(self.conv.weight)
@@ -119,17 +118,17 @@ class ConvBlock(nn.Module):
             if self.norm is not None:
                 x = self.norm(x)
             x.unsqueeze_(0)
-            x = x.repeat(self.T, 1, 1, 1, 1)
+            # x = x.repeat(self.T, 1, 1, 1, 1)
         else:
             x_shape = [x.shape[0], x.shape[1]]
-            x = x.flatten(0, 1)
+            x = x.flatten(0, 1)#将 x 张量的第 0 和第 1 维（通常是批量维度和通道维度）展平为一个单一的维度
             x = torch.nn.functional.conv2d(x, weight, bias=self.conv.bias, stride=self.conv.stride,
                                            padding=self.conv.padding, dilation=self.conv.dilation,
                                            groups=self.conv.groups)
             if self.norm is not None:
                 x = self.norm(x)
-            x_shape.extend(x.shape[1:])
-            x = x.view(x_shape)
+            x_shape.extend(x.shape[1:])#x.shape[1:]：返回 x 的形状，从第 1 维开始（即去掉第 0 维——通常是批量大小维度），得到一个新的形状元组。
+            x = x.view(x_shape)#view 函数会将张量 x 转换成 x_shape 所指定的形状
         if self.node is not None:
             x = self.node(x)
         x = self.neuron_mask(x)

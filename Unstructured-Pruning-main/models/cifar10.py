@@ -3,10 +3,11 @@ import torch.nn as nn
 from spikingjelly.clock_driven import functional, layer, surrogate, neuron
 from .submodules.sparse import ConvBlock
 from .submodules.layers import conv1x1, conv3x3, create_mslif
-
+from .braincog.model_zoo.base_module import BaseLinearModule
 
 __all__ = ['Cifar10Net', 'Cifar10ADMMNet', 'Cifar10ANNNet']
 
+fcsize=[512*8*4,1]
 
 class Cifar10Net(nn.Module):
     def __init__(self, T=8, base_width=256, num_classes=10):
@@ -14,39 +15,42 @@ class Cifar10Net(nn.Module):
         self.skip = ['static_conv']
 
         self.T = T
+        self.static_conv = ConvBlock(conv3x3(3, base_width), nn.BatchNorm2d(base_width),
+                                     create_mslif(), static=True, sparse_weights=True,
+                                     sparse_neurons=False)
         # self.static_conv = ConvBlock(conv3x3(3, base_width), nn.BatchNorm2d(base_width),
         #                              create_mslif(), static=True, T=T, sparse_weights=True,
         #                              sparse_neurons=False)
-        # self.conv1 = ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
-        #                        create_mslif(), sparse_weights=True, sparse_neurons=True)
-        # self.conv2 = ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
-        #                        create_mslif(), sparse_weights=True, sparse_neurons=True)
-        # self.maxpool2 = nn.MaxPool2d(2, 2)
-        # self.conv3 = ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
-        #                        create_mslif(), sparse_weights=True, sparse_neurons=True)
-        # self.conv4 = ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
-        #                        create_mslif(), sparse_weights=True, sparse_neurons=True)
-        # self.conv5 = ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
-        #                        create_mslif(), sparse_weights=True, sparse_neurons=True)
-        # self.maxpool5 = nn.MaxPool2d(2, 2)
+        self.conv1 = ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
+                               create_mslif(), sparse_weights=True, sparse_neurons=True)
+        self.conv2 = ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
+                               create_mslif(), sparse_weights=True, sparse_neurons=True)
+        self.maxpool2 = nn.MaxPool2d(2, 2)
+        self.conv3 = ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
+                               create_mslif(), sparse_weights=True, sparse_neurons=True)
+        self.conv4 = ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
+                               create_mslif(), sparse_weights=True, sparse_neurons=True)
+        self.conv5 = ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
+                               create_mslif(), sparse_weights=True, sparse_neurons=True)
+        self.maxpool5 = nn.MaxPool2d(2, 2)
 
-        self.feature = nn.Sequential(
-            ConvBlock(conv3x3(3, base_width), nn.BatchNorm2d(base_width),
-                      create_mslif(), static=True, T=T, sparse_weights=True,
-                      sparse_neurons=False),
-            ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
-                      create_mslif(), sparse_weights=True, sparse_neurons=True),
-            ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
-                      create_mslif(), sparse_weights=True, sparse_neurons=True),
-            nn.MaxPool2d(2, 2),
-            ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
-                      create_mslif(), sparse_weights=True, sparse_neurons=True),
-            ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
-                      create_mslif(), sparse_weights=True, sparse_neurons=True),
-            ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
-                      create_mslif(), sparse_weights=True, sparse_neurons=True),
-            nn.MaxPool2d(2, 2),
-        )
+        # self.feature = nn.Sequential(
+        #     ConvBlock(conv3x3(3, base_width), nn.BatchNorm2d(base_width),
+        #               create_mslif(), static=True, T=T, sparse_weights=True,
+        #               sparse_neurons=False),
+        #     ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
+        #               create_mslif(), sparse_weights=True, sparse_neurons=True),
+        #     ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
+        #               create_mslif(), sparse_weights=True, sparse_neurons=True),
+        #     nn.MaxPool2d(2, 2),
+        #     ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
+        #               create_mslif(), sparse_weights=True, sparse_neurons=True),
+        #     ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
+        #               create_mslif(), sparse_weights=True, sparse_neurons=True),
+        #     ConvBlock(conv3x3(base_width, base_width), nn.BatchNorm2d(base_width),
+        #               create_mslif(), sparse_weights=True, sparse_neurons=True),
+        #     nn.MaxPool2d(2, 2),
+        # )
 
         self.dp1 = layer.MultiStepDropout(0.5)
         self.fc1 = ConvBlock(conv1x1(base_width * 8 * 8, (base_width // 2) * 4 * 4), None,
@@ -55,15 +59,26 @@ class Cifar10Net(nn.Module):
         self.fc2 = ConvBlock(conv1x1((base_width // 2) * 4 * 4, num_classes * 10), None,
                              create_mslif(), sparse_weights=True, sparse_neurons=False)
         self.boost = nn.AvgPool1d(10, 10)
+
+        # paper2
+        self.cfla = self._cflatten()
+        self.fc_prun = self._create_fc_prun()
+        self.fc = self._create_fc()
+
         self.init_weight()
 
 
         # 定义卷积层和全连接层的索引
-        self.convlayer = [-1, 0, 1, 3, 4, 5]  # static_conv 和 conv1 到 conv5
-        self.fclayer = [6, 7]  # fc1 和 fc2
-        self.imgsize = [32, 32, 32, 16, 16, 16, 8, 8, 8]  # 每层输出的特征图大小（高，宽）
-        self.size = [3, 128, 128, 256, 256, 512, 512, 512]  # 每层输出的特征图通道数
-        self.size_pool = [3, 128, 128, 128, 256, 256, 256, 512, 512]  # 池化后的特征图通道数
+        #修改
+        self.convlayer = [-1, 0, 1,2, 4, 5,6]  # static_conv 和 conv1 到 conv5
+        self.fclayer = [8, 9]  # fc1 和 fc2
+        #imgsize：每层图像的大小
+        # self.imgsize = [32, 32, 32, 16, 16, 16, 8, 8, 8]
+        self.imgsize = [32, 32, 32, 16, 16, 16, 16, 8]
+        self.size = [256, 256, 256, 256, 256, 256, 256, 256]  # 每层输出的特征图通道数
+        # self.size_pool = [3, 256, 256, 256, 256, 256, 256, 256,256]  # 池化后的特征图通道数
+        self.size_pool = [256, 256, 256, 256, 256, 256, 256, 256]  # 池化后的特征图通道数
+
         self.fcsize = [512 * 8 * 8, 512]  # 全连接层的输入大小
         self.ctrace={} #用于存储卷积层的轨迹
         self.fctrace={}#用于存储全连接层的轨迹
@@ -71,6 +86,24 @@ class Cifar10Net(nn.Module):
         self.fcsum={}
         self.delta = 0.5
         self.step=T
+
+    def _cflatten(self):
+        fc = nn.Sequential(
+            nn.Flatten(),
+        )
+        return fc
+
+    def _create_fc_prun(self):
+        fc = nn.Sequential(
+            BaseLinearModule(fcsize[0], fcsize[1])
+        )
+        return fc
+
+    def _create_fc(self):
+        fc = nn.Sequential(
+            BaseLinearModule(fcsize[1], 10) # tag
+        )
+        return fc
 
     def init_weight(self):
         for m in self.modules():
@@ -121,83 +154,152 @@ class Cifar10Net(nn.Module):
             x = self.fc1.calc_c(x, [self.conv5])
             x = self.fc2.calc_c(x, [self.fc1])
 
-    # def forward(self, x):
-    #     spike_traces = torch.zeros_like(x, device=x.device)
-    #
-    #     x = self.static_conv(x)
-    #     spike_traces = self.update_spike_traces(spike_traces, x)  # 更新脉冲轨迹
-    #
-    #     x = self.conv1(x)
-    #     spike_traces = self.update_spike_traces(spike_traces, x)
-    #
-    #     x = self.conv2(x)
-    #     spike_traces = self.update_spike_traces(spike_traces, x)
-    #
-    #     #functional.seq_to_ann_forward 函数帮助将序列数据处理为 ANN 模块兼容的格式。
-    #     x = functional.seq_to_ann_forward(x, self.maxpool2)
-    #     x = self.conv3(x)
-    #     spike_traces = self.update_spike_traces(spike_traces, x)
-    #
-    #     x = self.conv4(x)
-    #     spike_traces = self.update_spike_traces(spike_traces, x)
-    #
-    #     x = self.conv5(x)
-    #     spike_traces = self.update_spike_traces(spike_traces, x)
-    #
-    #     x = functional.seq_to_ann_forward(x, self.maxpool5)
-    #     x = x.view(x.shape[0], x.shape[1], -1, 1, 1)
-    #     #### [T, N, C, H, W] -> [T, N, CxHxW, 1, 1]
-    #     #x = self.dp1(x)
-    #     x = self.fc1(x)
-    #     #x = self.dp2(x)
-    #     x = self.fc2(x)
-    #     x = x.flatten(2)
-    #
-    #     x = x.unsqueeze(2)
-    #     #### [T, N, L] -> [T, N, C=1, L]
-    #     out = functional.seq_to_ann_forward(x, self.boost).squeeze(2)
-    #
-    #     return out
-
     def forward(self, x):
-        inputs = self.encoder(x)
 
-        self.reset()
-        if not self.training:
-            self.fire_rate.clear()
-
+        # 编码层
+        # encoder
+        # self.reset
+        # print(x.shape) #(1,3,32,32)
+        x1 = self.static_conv(x) #(1,3,32,32) ->(1,1,256,32,32)
+        sum_out = 0
         outputs = []
         spikes = []
 
-        for t in range(self.step):
+
+        for i in range(self.step):
             spikest = []
-            x = inputs[t]
-            if x.shape[-1] > 32:
-                x = functional.interpolate(x, size=[64, 64])
-            spikest.append(x.detach())
-            for i in range(len(self.feature)):
-                spikei = self.feature[i](x)
-                x = spikei
-                spikest.append(spikei.detach())
+            spikest.append(x1.squeeze(0).detach())
+            x = self.conv1(x1)
+            spikest.append(x.squeeze(0).detach())
+
+            x = self.conv2(x)
+            spikest.append(x.squeeze(0).detach())
+
+            x = functional.seq_to_ann_forward(x, self.maxpool2)
+            spikest.append(x.squeeze(0).detach())
+
+            x = self.conv3(x)
+            spikest.append(x.squeeze(0).detach())
+
+            x = self.conv4(x)
+            spikest.append(x.squeeze(0).detach())
+
+            x = self.conv5(x)
+            spikest.append(x.squeeze(0).detach())
 
             x = functional.seq_to_ann_forward(x, self.maxpool5)
-            x = x.view(x.shape[0], x.shape[1], -1, 1, 1)
+            spikest.append(x.squeeze(0).detach())
+
+            #
+            spikes.append(spikest)
+
+            # x2 = x
+            # paper 1
+            x = x.view(x.shape[0], x.shape[1], -1, 1, 1)#张量前两个为x.shape[0], x.shape[1],后两位为1
             #### [T, N, C, H, W] -> [T, N, CxHxW, 1, 1]
             # x = self.dp1(x)
             x = self.fc1(x)
-            spikest.append(x.detach())
             # x = self.dp2(x)
             x = self.fc2(x)
-            spikest.append(x.detach())
             x = x.flatten(2)
-
             x = x.unsqueeze(2)
             #### [T, N, L] -> [T, N, C=1, L]
-            x = functional.seq_to_ann_forward(x, self.boost).squeeze(2)
+            sum_out += functional.seq_to_ann_forward(x, self.boost).squeeze(2)
 
-            outputs.append(x)
+            #要不要写这个
+            #x1 = x
 
-        return sum(outputs) / len(outputs), spikes
+            # # paper 2
+            # x2 = self.cfla(x2)
+            # spikest.append(x2.detach())
+            # x2 = self.fc_prun(x2)
+            # spikest.append(x2.detach())
+            # # x2 = self.fc(x2)
+            # spikes.append(spikest)
+            #
+            # # outputs.append(x2)
+
+        return sum_out/self.step, spikes
+
+        outputs = []
+        #记录每个时间步的脉冲spikes
+        spikes = []
+        #修改
+        '''for t in range(self.step):
+            x = self.static_conv(x)
+            spike_traces = self.update_spike_traces(spike_traces, x)  # 更新脉冲轨迹
+
+            x = self.conv1(x)
+            spike_traces = self.update_spike_traces(spike_traces, x)
+
+            x = self.conv2(x)
+            spike_traces = self.update_spike_traces(spike_traces, x)
+
+            #functional.seq_to_ann_forward 函数帮助将序列数据处理为 ANN 模块兼容的格式。
+            x = functional.seq_to_ann_forward(x, self.maxpool2)
+            x = self.conv3(x)
+            spike_traces = self.update_spike_traces(spike_traces, x)
+
+            x = self.conv4(x)
+            spike_traces = self.update_spike_traces(spike_traces, x)
+
+            x = self.conv5(x)
+            spike_traces = self.update_spike_traces(spike_traces, x)
+
+        x = functional.seq_to_ann_forward(x, self.maxpool5)
+        x = x.view(x.shape[0], x.shape[1], -1, 1, 1)
+        #### [T, N, C, H, W] -> [T, N, CxHxW, 1, 1]
+        #x = self.dp1(x)
+        x = self.fc1(x)
+        #x = self.dp2(x)
+        x = self.fc2(x)
+        x = x.flatten(2)
+
+        x = x.unsqueeze(2)
+        #### [T, N, L] -> [T, N, C=1, L]
+        out = functional.seq_to_ann_forward(x, self.boost).squeeze(2)
+
+        return out,'''
+
+    # def forward(self, inputs):
+    #     #inputs = self.encoder(x)
+    #
+    #     #self.reset()
+    #     if not self.training:
+    #         self.fire_rate.clear()
+    #
+    #     outputs = []
+    #     spikes = []
+    #     x = inputs
+    #     for t in range(self.step):
+    #         spikest = []
+    #
+    #         if x.shape[-1] > 32:
+    #             x = functional.interpolate(x, size=[64, 64])
+    #         spikest.append(x.detach())
+    #         for i in range(len(self.feature)):
+    #             spikei = self.feature[i](x)
+    #             x = spikei
+    #             spikest.append(spikei.detach())
+    #
+    #         x = functional.seq_to_ann_forward(x, self.maxpool5)
+    #         x = x.view(x.shape[0], x.shape[1], -1, 1, 1)
+    #         #### [T, N, C, H, W] -> [T, N, CxHxW, 1, 1]
+    #         # x = self.dp1(x)
+    #         x = self.fc1(x)
+    #         spikest.append(x.detach())
+    #         # x = self.dp2(x)
+    #         x = self.fc2(x)
+    #         spikest.append(x.detach())
+    #         x = x.flatten(2)
+    #
+    #         x = x.unsqueeze(2)
+    #         #### [T, N, L] -> [T, N, C=1, L]
+    #         x = functional.seq_to_ann_forward(x, self.boost).squeeze(2)
+    #
+    #         outputs.append(x)
+    #
+    #     return sum(outputs) / len(outputs), spikes
 
 
     def update_spike_traces(self, spike_traces, x):
