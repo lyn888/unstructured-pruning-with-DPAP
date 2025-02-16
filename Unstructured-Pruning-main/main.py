@@ -2,7 +2,7 @@ import os
 
 import math
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import torch
 print("可见的 GPU 数量:", torch.cuda.device_count())
@@ -67,6 +67,15 @@ ww_delta = {}
 #生存函数
 reduce = {}
 reduceww = {}
+
+
+
+import torch
+print(torch.__version__)  # 查看 PyTorch 版本
+print(torch.cuda.is_available())  # 查看是否启用 CUDA
+print(torch.version.cuda)  # CUDA 版本
+print(torch.backends.cudnn.version())  # cuDNN 版本
+torch.cuda.empty_cache()
 
 
 
@@ -175,6 +184,11 @@ def init_distributed(logger: logging.Logger, distributed_init_mode):
     #world_size 是进程的总数量，说明整个分布式训练一共有多少个进程在运行。
     #local_rank 是当前进程在本地（例如一台计算机的多个 GPU）中的编号。
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        print("开始")
+        print(f"RANK: {os.environ['RANK']}, WORLD_SIZE: {os.environ['WORLD_SIZE']}, LOCAL_RANK: {os.environ['LOCAL_RANK']}")
+        print(os.environ)
+        print(os.environ)
+        print('---------++++++++++++++++++++++++++++++++')
         rank = int(os.environ["RANK"])
         world_size = int(os.environ['WORLD_SIZE'])
         local_rank = int(os.environ['LOCAL_RANK'])
@@ -403,7 +417,7 @@ def init(batch,convlayer,fclayer,size,fcsize):
     for i in range(1,len(convlayer)):
         index=convlayer[i]
         neuron_th[index]=torch.zeros((batch,size[i]),device=device)
-        convtra[index] = torch.zeros(size[i],device=device)
+        convtra[index] = torch.zeros(size[i],device=device)    #为每一层卷积层的输出创建一个全零的张量，通常用于存储每层卷积后的特征图或神经元激活
         bcm[index]=torch.zeros(size[i],size[i-1],device=device)
         epoch_trace[index] = torch.zeros((size[i]),device=device)
     for i in range(1,len(fclayer)):
@@ -450,7 +464,33 @@ def DPAP_do_mask(bcm,spines,epoch,model):
         ww = bcm[index]
         dendrite = spines[index]
         mat[index] = get_filter_codebook(ww, dendrite, 4, index, epoch)
-        a = mat[index] * model.conv1.mask()
+
+        # for i in range(1,len(model.convlayer)):
+        #     index=model.convlayer[i]
+        #     ww = self.feature[index].conv.weight
+        #     maskww=ww*self.mat[index]
+        #     self.feature[index].conv.weight.data=maskww
+
+    conv1_weight = model.conv1.conv.weight
+    maskww = conv1_weight * mat[0]
+    model.conv1.conv.weight.data = maskww
+
+    conv2_weight = model.conv2.conv.weight
+    maskww = conv2_weight * mat[1]
+    model.conv2.conv.weight.data = maskww
+
+    conv3_weight = model.conv3.conv.weight
+    maskww = conv3_weight * mat[2]
+    model.conv3.conv.weight.data = maskww
+
+    conv4_weight = model.conv4.conv.weight
+    maskww = conv4_weight * mat[4]
+    model.conv4.conv.weight.data = maskww
+
+    conv5_weight = model.conv5.conv.weight
+    maskww = conv5_weight * mat[5]
+    model.conv5.conv.weight.data = maskww
+
 
 
         
@@ -679,7 +719,9 @@ def test(model, dataset_type, data_loader_test, inputs, args, logger):
     with torch.no_grad():
         for idx, (image, target) in enumerate(data_loader_test):
             image, target = image.cuda(), target.cuda()
-            output = model(image).mean(0)
+            # output,spikes = model(image).mean(0)
+            output, spikes = model(image)
+            output = output.mean(0)
             functional.reset_net(model)
 
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
@@ -1096,7 +1138,7 @@ def main():
             trafc = unit_tensor(epoch_trace[index])
             spines[index] = bcmfc * trafc
 
-
+        DPAP_do_mask(bcm, spines, epoch, model)
 
 
 

@@ -40,6 +40,26 @@ class VGGSNN(nn.Module):
         self.boost = nn.AvgPool1d(10, 10)
         self.init_weight()
 
+
+        # 定义卷积层和全连接层的索引
+        #修改
+        self.convlayer = [-1, 0, 1,3, 4,6,7,9,10]
+        self.fclayer = [11]  # fc1 和 fc2
+        #imgsize：每层图像的大小
+        # self.imgsize = [32, 32, 32, 16, 16, 16, 8, 8, 8]
+        self.imgsize = [48, 48,24, 24, 24,12,12, 12, 6,6, 6,3]
+        self.size = [64,128,128,256, 256,256, 512,512, 512, 512,512]  # 每层输出的特征图通道数
+        # self.size_pool = [3, 256, 256, 256, 256, 256, 256, 256,256]  # 池化后的特征图通道数
+        self.size_pool = [64,128,128,256, 256,256, 512,512, 512, 512,512]  # 池化后的特征图通道数
+
+        self.fcsize = [512 * 3 * 3]  # 全连接层的输入大小
+        self.ctrace={} #用于存储卷积层的轨迹
+        self.fctrace={}#用于存储全连接层的轨迹
+        self.csum={}#卷积层的轨迹累加值
+        self.fcsum={}
+        self.delta = 0.5
+        self.step=8
+
     def init_weight(self):
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.Linear)):
@@ -118,3 +138,80 @@ class VGGSNN(nn.Module):
         #### [T, N, L] -> [T, N, C=1, L]
         out = functional.seq_to_ann_forward(x, self.boost).squeeze(2)
         return out
+
+    def forward(self, x: torch.Tensor):
+        # 转换输入数据维度 [N, T, C, H, W] -> [T, N, C, H, W]
+        x = x.transpose(0, 1)
+        #### [T, N, C, H, W]
+
+        # 初始化输出和脉冲记录
+        sum_out = 0
+        spikes = []
+
+        x1 = self.conv1(x)
+
+        # 处理每个时间步
+        for i in range(self.step):
+            spikest = []
+
+            # 第一层卷积
+
+            spikest.append(x1.squeeze(0).detach())
+
+            # 第二层卷积
+            x = self.conv2(x1)
+            spikest.append(x.squeeze(0).detach())
+
+            # 第一层池化
+            x = functional.seq_to_ann_forward(x, self.pool1)
+            spikest.append(x.squeeze(0).detach())
+
+            # 第三层卷积
+            x = self.conv3(x)
+            spikest.append(x.squeeze(0).detach())
+
+            # 第四层卷积
+            x = self.conv4(x)
+            spikest.append(x.squeeze(0).detach())
+
+            # 第二层池化
+            x = functional.seq_to_ann_forward(x, self.pool2)
+            spikest.append(x.squeeze(0).detach())
+
+            # 第五层卷积
+            x = self.conv5(x)
+            spikest.append(x.squeeze(0).detach())
+
+            # 第六层卷积
+            x = self.conv6(x)
+            spikest.append(x.squeeze(0).detach())
+
+            # 第三层池化
+            x = functional.seq_to_ann_forward(x, self.pool3)
+            spikest.append(x.squeeze(0).detach())
+
+            # 第七层卷积
+            x = self.conv7(x)
+            spikest.append(x.squeeze(0).detach())
+
+            # 第八层卷积
+            x = self.conv8(x)
+            spikest.append(x.squeeze(0).detach())
+
+            # 第四层池化
+            x = functional.seq_to_ann_forward(x, self.pool4)
+            spikest.append(x.squeeze(0).detach())
+
+            # 记录当前时间步的脉冲
+            spikes.append(spikest)
+
+            # 全连接层
+            x = x.view(x.shape[0], x.shape[1], -1, 1, 1)  # [T, N, C, H, W] -> [T, N, CxHxW, 1, 1]
+            x = self.classifier(x)
+            x = x.flatten(2).unsqueeze(2)  # [T, N, CxHxW] -> [T, N, C=1, L]
+
+            # 聚合时间步的输出
+            sum_out += functional.seq_to_ann_forward(x, self.boost).squeeze(2)
+
+        # 返回平均输出和脉冲记录
+        return sum_out / self.step, spikes
