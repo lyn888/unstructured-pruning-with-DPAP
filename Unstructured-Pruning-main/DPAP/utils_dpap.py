@@ -30,7 +30,7 @@ def unit_tensor(x):
         if marge!=0:
             xx=(x-minx)/marge
         else:
-            xx=0.5*torch.ones_like(x)
+            xx=0.5*torch.ones_like(x)   
         return xx
     else:
         return x

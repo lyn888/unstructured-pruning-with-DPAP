@@ -2,9 +2,13 @@ import os
 
 import math
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
 
 import torch
+import pdb;
+
+torch.cuda.empty_cache()
+torch.cuda.ipc_collect()
 print("可见的 GPU 数量:", torch.cuda.device_count())
 print("当前使用的 GPU:", torch.cuda.current_device())
 print("当前 GPU 名称:", torch.cuda.get_device_name(0))
@@ -116,7 +120,8 @@ def parse_args():
     parser.add_argument('--print-freq', default=10, type=int,
                         help='Number of times a debug message is printed in one epoch')
     parser.add_argument('--tb-interval', type=int, default=10)
-    parser.add_argument('--data-path', default='./datasets', help='dataset')
+    ##parser.add_argument('--data-path', default='./datasets', help='dataset')
+    parser.add_argument('--data-path', default='/data/lyn/datasets/CIFAR10_DVS/', help='dataset')
     parser.add_argument('--output-dir', default='./logs/temp')
     parser.add_argument('--resume', type=str, help='resume from checkpoint')
     parser.add_argument('--resume-type', type=str, default='test', help='search, finetune or test')
@@ -186,8 +191,7 @@ def init_distributed(logger: logging.Logger, distributed_init_mode):
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         print("开始")
         print(f"RANK: {os.environ['RANK']}, WORLD_SIZE: {os.environ['WORLD_SIZE']}, LOCAL_RANK: {os.environ['LOCAL_RANK']}")
-        print(os.environ)
-        print(os.environ)
+
         print('---------++++++++++++++++++++++++++++++++')
         rank = int(os.environ["RANK"])
         world_size = int(os.environ['WORLD_SIZE'])
@@ -278,11 +282,47 @@ def load_data(dataset_dir, cache_dataset, dataset_type, distributed: bool, augme
         else:
             transform_train = DVStransform(
                 transform=transforms.Compose([transforms.Resize(size=(48, 48), antialias=True)]))
-        transform_test = DVStransform(transform=transforms.Resize(size=(48, 48), antialias=True))
+            transform_test = DVStransform(transform=transforms.Resize(size=(48, 48), antialias=True))
 
-        dataset = CIFAR10DVS(dataset_dir, data_type='frame', frames_number=T, split_by='number')
+
+
+        # train_set_pth = os.path.join(args.data_dir, f'train_set_{args.time}.pt')
+        # test_set_pth = os.path.join(args.data_dir, f'test_set_{args.time}.pt')
+        # if os.path.exists(train_set_pth) and os.path.exists(test_set_pth):
+        #     train_dataset = torch.load(train_set_pth)
+        #     val_dataset = torch.load(test_set_pth)
+        # else:
+        #     origin_set = CIFAR10DVS(root=args.data_dir, data_type='frame', frames_number=10,
+        #                             split_by='number')
+        #     train_dataset, val_dataset = split_to_train_test_set(0.9, origin_set, 10)
+        #     if not os.path.exists(args.data_dir):
+        #         os.makedirs(args.data_dir)
+        #     torch.save(train_dataset, train_set_pth)
+        #     torch.save(val_dataset, test_set_pth)
+
+
+
+        #加载event数据
+
+
+        # if datase 不存在
+        ##dataset = CIFAR10DVS(dataset_dir, data_type='frame', frames_number=T, split_by='number')
+
+        # dataset = CIFAR10DVS(root=dataset_dir, data_type='event', frames_number=10, split_by='number')
+
+        dataset = CIFAR10DVS(dataset_dir, data_type='frame', frames_number=10, split_by='number')
+
+
         dataset, dataset_test = DatasetSplitter(dataset, 0.9,
                                                 True), DatasetSplitter(dataset, 0.1, False)
+        # train_set_pth = '/data/zhan/Event_Camera_Datasets/CIFAR10/CIFAR10DVS/T_10_events_num_2000_frames_64_64_np_0.85/train'
+        # test_set_pth = '/data/zhan/Event_Camera_Datasets/CIFAR10/CIFAR10DVS/T_10_events_num_2000_frames_64_64_np_0.85/test'
+        # if os.path.exists(train_set_pth) and os.path.exists(test_set_pth):
+        #     dataset = torch.load(train_set_pth)
+        #     dataset_test = torch.load(test_set_pth)
+
+        # 存在
+        # torch.load
     elif dataset_type == 'ImageNet':
         normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         logger.info('Loading training data')
@@ -345,22 +385,33 @@ def load_data(dataset_dir, cache_dataset, dataset_type, distributed: bool, augme
 
 #修改部分
 
-def computing_trace(model,spikes,batch_size = 16):
+def computing_trace(model,spikes,batch_size = 1):
+    if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+        model = model.module  # 访问原始模型
+
 
 
     for i in range(len(model.imgsize)):
         index=i-1
+
+
         # 存储每一层卷积层的神经元活动追踪（spike trace）
         model.ctrace[index]=torch.zeros((batch_size,model.size_pool[i],model.imgsize[i],model.imgsize[i]),device=device)
+
     for i in range(len(model.fclayer)):
         index=model.fclayer[i]
+
         model.fctrace[index]=torch.zeros((batch_size,model.fcsize[i]),device=device)
     for t in range(model.step):
+
+
         for i in range(len(model.imgsize)):
             index=i-1
             sp=spikes[t][index+1].detach()
-            #print(sp.size(),model.ctrace[index].size())
+            sp = sp.mean(dim=0, keepdim=True).squeeze(0)
+
             model.ctrace[index]=model.delta*model.ctrace[index].cuda()+sp.cuda()#卷积层的公式2
+
         # for i in range(len(model.fclayer)):
         #     index=model.fclayer[i]
         #     sp=spikes[t][index+1].detach()
@@ -368,11 +419,19 @@ def computing_trace(model,spikes,batch_size = 16):
     for i in range(len(model.imgsize)):
         index=i-1
         model.csum[index]=model.ctrace[index]/(model.step)
-        model.csum[index]=torch.sum(torch.sum(model.csum[index],dim=2),dim=2)
+
+
+        #model.csum[index]=torch.sum(torch.sum(model.csum[index],dim=2),dim=2)
+        model.csum[index] = torch.sum(torch.sum(model.csum[index], dim=2), dim=2)
+
     # for i in range(len(model.fclayer)):
     #     index=model.fclayer[i]
     #     model.fcsum[index]=model.fctrace[index]/(model.step)
-    return model.csum,model.fcsum
+
+
+    return model.csum,model.fcsum  #csum[-1].shape: torch.Size([10, 16, 48]) 时间步，通道数，特征图大小
+
+
 
 
 #epoch_trace 主要用于 神经元修剪，通过分析神经元的激活频率来确定是否保留神经元。
@@ -380,17 +439,33 @@ def computing_trace(model,spikes,batch_size = 16):
 #spikes神经元在训练期间的脉冲
 def BCM_and_trace(model,NUM,spikes,neuron_th,bcm,epoch_trace):
 
+
+    # 如果模型是 DDP 包裹的，获取原始模型
+    if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+        model = model.module
+
     NUM = NUM + 1
 
     #csum：卷积层的神经元的spiking trace。
     #fcsum：全连接层的神经元的spiking trace。
     csum,fcsum= computing_trace(model, spikes)
+
+    # for index in csum:
+    #     print(f"csum[{index}].shape: {csum[index].shape}")
+
+
+
     for i in range(1,len(model.convlayer)):
         index=model.convlayer[i]
-        post1 = (csum[index] * (csum[index] - neuron_th[index]))
+
+        post1 = csum[index] * (csum[index] - neuron_th[index])
+        # post1 = (csum[index] * (csum[index] - neuron_th[index]))
         #hebb1：根据Hebb规则计算的突触更新，用于更新BCM矩阵，表示神经元之间的学习。
+
+        #hebb1 = torch.mm(post1.T, csum[index - 1])
         hebb1 = torch.mm(post1.T, csum[index-1])
         #bcm[index]：突触可塑性矩阵，记录神经元之间的突触强度。
+
         bcm[index] = bcm[index] + hebb1#公式6
         neuron_th[index] = torch.div(neuron_th[index] * (NUM - 1) + csum[index], NUM)#滑动阈值θ
         cs=torch.sum(csum[index],dim=0)
@@ -581,6 +656,7 @@ def train_one_epoch(epoch_trace, bcm, neuron_th, model, criterion, penalty_term,
                 with amp.autocast():
                     #output = model(image)
                     #修改
+
                     output, spikes = model(image)
                     if one_hot:
                         loss = criterion(output, F.one_hot(target, one_hot).float())
@@ -595,6 +671,7 @@ def train_one_epoch(epoch_trace, bcm, neuron_th, model, criterion, penalty_term,
                 else:
                     loss = criterion(output, target)
             metric_dict['loss'].update(loss.item())
+
 
             # Update BCM and epoch_trace
             #修改
@@ -891,7 +968,10 @@ def main():
     data_loader_test = torch.utils.data.DataLoader(dataset_test, batch_size=args.batch_size,
                                                    sampler=test_sampler, num_workers=args.workers,
                                                    pin_memory=True, drop_last=False)
-
+    #调试
+    # pdb.set_trace()
+    # if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+    #     pdb.set_trace()
     # model
 
     model: Union[cifar10.Cifar10Net, cifar10dvs.VGGSNN, sew_resnet.SEWResNet_ImageNet,
@@ -900,6 +980,7 @@ def main():
         model = cifar10.__dict__[args.model](T=args.T, num_classes=num_classes).cuda()
     elif args.model in cifar10dvs.__dict__:
         model = cifar10dvs.__dict__[args.model]().cuda()
+        print(model)
     elif args.model in sew_resnet.__dict__:
         model = sew_resnet.__dict__[args.model](zero_init_residual=args.zero_init_residual,
                                                 T=args.T, num_classes=num_classes).cuda()
@@ -1115,6 +1196,9 @@ def main():
 
         with Timer(' Train', logger):
             logger.debug('[Training]')
+            #model有问题
+            print('youwenti--------------------')
+            ::
             train_loss, train_acc1, train_acc5 = train_one_epoch(
                 epoch_trace, bcm, neuron_th ,model, criterion, penalty_term, optimizer_train, optimizer_prune, data_loader_train,
                 temp_scheduler, logger, epoch, args.print_freq, world_size, scaler,

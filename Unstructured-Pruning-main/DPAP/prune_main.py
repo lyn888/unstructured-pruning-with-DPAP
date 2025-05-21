@@ -133,6 +133,8 @@ def train_epoch(
         data_time_m.update(time.time() - end)
         inputs, target = inputs.type(torch.FloatTensor).cuda(), target.cuda()
         output,spikes = model(inputs)
+        print(spikes)
+
 
         epoch_trace,bcm,NUM = BCM_and_trace(NUM,trace,spikes,neuron_th,bcm,epoch_trace)
 
