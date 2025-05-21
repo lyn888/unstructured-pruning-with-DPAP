@@ -1198,7 +1198,7 @@ def main():
             logger.debug('[Training]')
             #model有问题
             print('youwenti--------------------')
-            ::
+
             train_loss, train_acc1, train_acc5 = train_one_epoch(
                 epoch_trace, bcm, neuron_th ,model, criterion, penalty_term, optimizer_train, optimizer_prune, data_loader_train,
                 temp_scheduler, logger, epoch, args.print_freq, world_size, scaler,
