@@ -2,7 +2,9 @@ import os
 
 import math
 
-#os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+from spikingjelly.clock_driven.examples.Spiking_DQN_state import train
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import torch
 import pdb;
@@ -313,6 +315,7 @@ def load_data(dataset_dir, cache_dataset, dataset_type, distributed: bool, augme
         dataset = CIFAR10DVS(dataset_dir, data_type='frame', frames_number=10, split_by='number')
 
 
+
         dataset, dataset_test = DatasetSplitter(dataset, 0.9,
                                                 True), DatasetSplitter(dataset, 0.1, False)
         # train_set_pth = '/data/zhan/Event_Camera_Datasets/CIFAR10/CIFAR10DVS/T_10_events_num_2000_frames_64_64_np_0.85/train'
@@ -555,16 +558,29 @@ def DPAP_do_mask(bcm,spines,epoch,model):
     model.conv2.conv.weight.data = maskww
 
     conv3_weight = model.conv3.conv.weight
-    maskww = conv3_weight * mat[2]
+    maskww = conv3_weight * mat[3]
     model.conv3.conv.weight.data = maskww
 
     conv4_weight = model.conv4.conv.weight
     maskww = conv4_weight * mat[4]
     model.conv4.conv.weight.data = maskww
 
+
     conv5_weight = model.conv5.conv.weight
-    maskww = conv5_weight * mat[5]
+    maskww = conv5_weight * mat[6]
     model.conv5.conv.weight.data = maskww
+
+    conv6_weight = model.conv6.conv.weight
+    maskww = conv6_weight * mat[7]
+    model.conv6.conv.weight.data = maskww
+
+    conv7_weight = model.conv7.conv.weight
+    maskww = conv7_weight * mat[9]
+    model.conv7.conv.weight.data = maskww
+
+    conv8_weight = model.conv8.conv.weight
+    maskww = conv8_weight * mat[10]
+    model.conv8.conv.weight.data = maskww
 
 
 
@@ -582,6 +598,7 @@ def get_filter_codebook( ww, dendrite, ii, index, epoch):
         pos = torch.nonzero(n_delta[index] > 0)
         #公式10
         n_delta[index][pos] = n_delta[index][pos] + 5
+        print("--------------wconv")
         print(wconv.mean(), wconv.max(), wconv.min())
         #公式11
         reduce[index] = reduce[index] * 0.999 + n_delta[index] * math.exp(-int((epoch - 5) / 12))
@@ -919,7 +936,6 @@ def test(model, dataset_type, data_loader_test, inputs, args, logger):
 
 
 
-
 def main():
 
     ##################################################
@@ -1207,22 +1223,25 @@ def main():
                 lr_scheduler_train.step()
                 lr_scheduler_prune.step()
 
+            print(train_loss, train_acc1, train_acc5)
 
+
+        if(epoch> 20 and epoch % 10 == 0):
         #修改
-        for i in range(1, len(model.convlayer)):
-            index = model.convlayer[i]
-            bcmconv = torch.sum(bcm[index], dim=1)
-            bcmconv = unit_tensor(bcmconv)
-            traconv = unit_tensor(epoch_trace[index])
-            spines[index] = bcmconv * traconv
-        for i in range(1, len(model.fclayer)):
-            index = model.fclayer[i]
-            bcmfc = torch.sum(bcm[index], dim=1)
-            bcmfc = unit_tensor(bcmfc)
-            trafc = unit_tensor(epoch_trace[index])
-            spines[index] = bcmfc * trafc
+            for i in range(1, len(model.convlayer)):
+                index = model.convlayer[i]
+                bcmconv = torch.sum(bcm[index], dim=1)
+                bcmconv = unit_tensor(bcmconv)
+                traconv = unit_tensor(epoch_trace[index])
+                spines[index] = bcmconv * traconv
+            for i in range(1, len(model.fclayer)):
+                index = model.fclayer[i]
+                bcmfc = torch.sum(bcm[index], dim=1)
+                bcmfc = unit_tensor(bcmfc)
+                trafc = unit_tensor(epoch_trace[index])
+                spines[index] = bcmfc * trafc
 
-        DPAP_do_mask(bcm, spines, epoch, model)
+            DPAP_do_mask(bcm, spines, epoch, model)
 
 
 
